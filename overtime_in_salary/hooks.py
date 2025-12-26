@@ -5,6 +5,14 @@ app_description = "Show overtime in salary"
 app_email = "Faizanahmed1295@gmail.com"
 app_license = "mit"
 
+
+doc_events = {
+    "Salary Slip": {
+        "validate": "overtime_in_salary.overtime_in_salary.salary_slip.calculate_overtime"
+    }
+}
+
+
 # Apps
 # ------------------
 
