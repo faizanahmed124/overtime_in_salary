@@ -18,7 +18,6 @@ def calculate_overtime(doc, method):
     doc.custom_overtime_rate = 0
     doc.custom_duty_hours = 0
     doc.custom_less_duty_hour = 0
-    doc.custom_less_duty_hours_amount = 0
 
     if not doc.employee or not doc.start_date or not doc.end_date:
         frappe.msgprint(
@@ -46,20 +45,15 @@ def calculate_overtime(doc, method):
         if gross_pay is None:
             gross_pay = earnings_sum
 
-        # ✅ Allowance dono types ke liye gross pay mein add hoga
-        allowance = flt(doc.custom_allowance or 0)
-        gross_pay = gross_pay + allowance
-
         doc.gross_pay = gross_pay
+        doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
 
         if is_permanent:
-            doc.total_deduction = flt(doc.total_deduction) + income_tax_amount + flt(doc.custom_less_duty_hours_amount or 0)
             doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
             doc.custom_paid_salary = doc.net_pay + overtime_amount
             doc.rounded_total = round_to_integer(doc.custom_paid_salary)
             doc.custom_per_day_rate = flt(employee.ctc) or 0
         else:
-            doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
             doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
             doc.custom_paid_salary = doc.net_pay
             doc.rounded_total = round_to_integer(doc.net_pay)
@@ -135,51 +129,50 @@ def calculate_overtime(doc, method):
     doc.custom_duty_hours = total_dutyhours
 
     # ================================
-    # 3.7, 3.8, 3.9 — ONLY FOR PERMANENT
+# 3.7 TOTAL LESS DUTY HOURS
+# ================================
+    total_less_duty_hours = frappe.db.sql("""
+        SELECT COALESCE(SUM(custom_less_duty_hour),0)
+        FROM `tabAttendance`
+        WHERE employee=%s
+        AND attendance_date BETWEEN %s AND %s
+        AND docstatus=1
+    """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
+
+    doc.custom_less_duty_hour = flt(total_less_duty_hours)
+
     # ================================
-    if emp_type == "PERMANENT":
+    # 3.8 LDH vs OVERTIME ADJUSTMENT
+    # ================================
+    ldh   = flt(doc.custom_less_duty_hour)
+    ot    = flt(doc.custom_overtime_hours)
 
-        # ================================
-        # 3.7 TOTAL LESS DUTY HOURS
-        # ================================
-        total_less_duty_hours = frappe.db.sql("""
-            SELECT COALESCE(SUM(custom_less_duty_hour),0)
-            FROM `tabAttendance`
-            WHERE employee=%s
-            AND attendance_date BETWEEN %s AND %s
-            AND docstatus=1
-        """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
+    if ot > ldh:
+        # overtime zyada hai — LDH minus ho jaye
+        doc.custom_overtime_hours    = round(ot - ldh, 2)
+        doc.custom_less_duty_hour    = 0
+    elif ldh > ot:
+        # LDH zyada hai — overtime zero, baqi LDH bachta hai
+        doc.custom_less_duty_hour    = round(ldh - ot, 2)
+        doc.custom_overtime_hours    = 0
+    else:
+        # dono equal — dono zero
+        doc.custom_overtime_hours    = 0
+        doc.custom_less_duty_hour    = 0
 
-        doc.custom_less_duty_hour = flt(total_less_duty_hours)
 
-        # ================================
-        # 3.8 LDH vs OVERTIME ADJUSTMENT
-        # ================================
-        ldh = flt(doc.custom_less_duty_hour)
-        ot  = flt(doc.custom_overtime_hours)
+    # ================================
+    # 3.9 LDH AMOUNT CALCULATION
+    # ================================
+    if doc.custom_less_duty_hour and doc.custom_less_duty_hour > 0:
+        month_days   = date_diff(doc.end_date, doc.start_date) + 1
+        per_day_rate = flt(base_salary) / month_days
+        per_hour_rate = per_day_rate / 8
 
-        if ot > ldh:
-            doc.custom_overtime_hours = round(ot - ldh, 2)
-            doc.custom_less_duty_hour = 0
-        elif ldh > ot:
-            doc.custom_less_duty_hour = round(ldh - ot, 2)
-            doc.custom_overtime_hours = 0
-        else:
-            doc.custom_overtime_hours = 0
-            doc.custom_less_duty_hour = 0
-
-        # ================================
-        # 3.9 LDH AMOUNT CALCULATION
-        # ================================
-        if doc.custom_less_duty_hour > 0:
-            month_days    = date_diff(doc.end_date, doc.start_date) + 1
-            per_day_rate  = flt(base_salary) / month_days
-            per_hour_rate = per_day_rate / 8
-            doc.custom_less_duty_hours_amount = round_to_two_decimals(
-                per_hour_rate * doc.custom_less_duty_hour
-            )
-        else:
-            doc.custom_less_duty_hours_amount = 0
+        ldh_amount = round_to_two_decimals(per_hour_rate * doc.custom_less_duty_hour)
+        doc.custom_less_duty_hours_amount = ldh_amount
+    else:
+        doc.custom_less_duty_hours_amount = 0
 
     # ================================
     # 3.5 HALF DAY COUNT & PAYMENT DAYS ADJUST
@@ -196,12 +189,15 @@ def calculate_overtime(doc, method):
     half_day_deduction = 0
 
     if half_day_count > 0:
+        # ✅ Payment days adjust
         doc.payment_days = flt(doc.payment_days) - (half_day_count * 0.5)
 
+        # ✅ Per day rate se half day amount nikalo
         month_days = date_diff(doc.end_date, doc.start_date) + 1
         per_day = flt(base_salary) / month_days
         half_day_deduction = round_to_integer(per_day * 0.5 * half_day_count)
 
+        # ✅ Pehli earnings row (Basic Salary) se minus karo
         if doc.earnings:
             doc.earnings[0].amount = round_to_integer(
                 flt(doc.earnings[0].amount) - half_day_deduction
@@ -240,11 +236,8 @@ def calculate_overtime(doc, method):
         Month Days: {month_days}<br>
         Per Day: {per_day_salary:.6f}<br>
         OT Rate: {doc.custom_overtime_rate:.2f}<br>
-        OT Hours (after LDH adj): {doc.custom_overtime_hours}<br>
-        <b>OT Amount: {doc.custom_overtime_amount}</b><br>
-        <hr>
-        Less Duty Hours (after adj): {doc.custom_less_duty_hour}<br>
-        LDH Amount: {doc.custom_less_duty_hours_amount}<br>
+        OT Hours: {doc.custom_overtime_hours}<br>
+        <b>OT Amount: {doc.custom_overtime_amount}</b>
         """
 
     elif emp_type == "DAILY WAGES":
@@ -311,7 +304,6 @@ def calculate_overtime(doc, method):
         Half Days: {half_day_count} → Deduction: -{half_day_deduction}<br>
         Payment Days: {doc.payment_days}<br>
         Earnings Sum: {earnings_sum}<br>
-        Allowance: {flt(doc.custom_allowance or 0)}<br>
         OT Amount: {doc.custom_overtime_amount}<br>
         Gross Pay: {doc.gross_pay}<br>
         Pay Rate (CTC): {doc.custom_per_day_rate}<br>
@@ -320,6 +312,8 @@ def calculate_overtime(doc, method):
         {"<b>Custom Paid Salary (Net + OT): " + str(doc.custom_paid_salary) + "</b><br>" if emp_type == "PERMANENT" else ""}
         Rounded Total: {doc.rounded_total}<br>
         In Words: {doc.total_in_words}
+        Less Duty Hours: {doc.custom_less_duty_hour}<br>
+
         </div>
         """,
         indicator="green"
