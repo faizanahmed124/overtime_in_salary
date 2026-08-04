@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   linter:
-    name: 'Frappe Linter'
+    name: 'frappe Linter'
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
 

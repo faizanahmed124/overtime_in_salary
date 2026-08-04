@@ -1,41 +1,41 @@
-### Overtime In Salary
+SELECT 
+    pi.posting_date AS posting_date,
+    
+    pii.item_name AS item_name,
+    
+    it.item_group AS item_group,
+    
+    pi.supplier AS supplier_name,
+    
+    pii.uom AS uom,
+    pii.qty AS qty,
+    pii.rate AS rate,
+    pii.amount AS amount,
 
-Show overtime in salary
+    pi.grand_total AS grand_total
 
-### Installation
+FROM 
+    `tabPurchase Invoice` pi
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+JOIN 
+    `tabPurchase Invoice Item` pii 
+        ON pi.name = pii.parent
 
-```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app overtime_in_salary
-```
+LEFT JOIN 
+    `tabItem` it 
+        ON pii.item_code = it.name
 
-### Contributing
+WHERE 
+    pi.docstatus = 1
+    AND pi.posting_date BETWEEN %(from_date)s AND %(to_date)s
+    AND pii.warehouse = %(warehouse)s
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
+    -- 🔥 SMART ITEM GROUP FILTER
+    AND (
+        %(item_group)s IS NULL 
+        OR %(item_group)s = '' 
+        OR it.item_group = %(item_group)s
+    )
 
-```bash
-cd apps/overtime_in_salary
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
-
-### CI
-
-This app can use GitHub Actions for CI. The following workflows are configured:
-
-- CI: Installs this app and runs unit tests on every push to `develop` branch.
-- Linters: Runs [Frappe Semgrep Rules](https://github.com/frappe/semgrep-rules) and [pip-audit](https://pypi.org/project/pip-audit/) on every pull request.
-
-
-### License
-
-mit
+ORDER BY 
+    it.item_group, pi.posting_date DESC;
