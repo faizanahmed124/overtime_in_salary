@@ -1,4 +1,5 @@
 import frappe
+
 from overtime_in_salary.overtime_in_salary.salary_slip import calculate_overtime
 
 
@@ -21,6 +22,10 @@ def bulk_recalculate_selected_slips(names):
 
 			if doc.docstatus == 1:
 				doc.flags.ignore_validate_update_after_submit = True
+
+			# Employee master se mode_of_payment, bank_name, bank_account_no
+			# dobara fetch karo — isi ki wajah se pehle update nahi ho raha tha.
+			doc.pull_emp_details()
 
 			doc.get_working_days_details(lwp=doc.leave_without_pay)
 			doc.calculate_net_pay()
@@ -63,6 +68,11 @@ def auto_recalculate_draft_slips(employee, from_date=None, to_date=None):
 	for name in slip_names:
 		try:
 			doc = frappe.get_doc("Salary Slip", name)
+
+			# Employee master se mode_of_payment, bank_name, bank_account_no
+			# dobara fetch karo.
+			doc.pull_emp_details()
+
 			doc.get_working_days_details(lwp=doc.leave_without_pay)
 			doc.calculate_net_pay()
 			calculate_overtime(doc, None)
@@ -107,7 +117,15 @@ def on_employee_change(doc, method):
 	if not changed:
 		return
 
-	relevant_fields = ["custom_allow_overtime", "custom_income_tax_amount", "ctc", "employment_type"]
+	relevant_fields = [
+		"custom_allow_overtime",
+		"custom_income_tax_amount",
+		"ctc",
+		"employment_type",
+		"salary_mode",       # Mode of Payment (bank/cash/cheque)
+		"bank_name",
+		"bank_ac_no",
+	]
 	if any(doc.get(f) != changed.get(f) for f in relevant_fields):
 		frappe.enqueue(
 			auto_recalculate_draft_slips,
