@@ -46,21 +46,19 @@ def calculate_overtime(doc, method):
         if gross_pay is None:
             gross_pay = earnings_sum
 
-        # ✅ Allowance dono types ke liye gross pay mein add hoga
-        allowance = flt(doc.custom_allowance or 0)
-        gross_pay = gross_pay + allowance
+        doc.gross_pay = gross_pay   # ✅ allowance yahan include nahi hota
 
-        doc.gross_pay = gross_pay
+        allowance = flt(doc.custom_allowance or 0)
 
         if is_permanent:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount + flt(doc.custom_less_duty_hours_amount or 0)
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
             doc.custom_paid_salary = doc.net_pay + overtime_amount
             doc.rounded_total = round_to_integer(doc.custom_paid_salary)
             doc.custom_per_day_rate = flt(employee.ctc) or 0
         else:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
             doc.custom_paid_salary = doc.net_pay
             doc.rounded_total = round_to_integer(doc.net_pay)
 
@@ -311,7 +309,7 @@ def calculate_overtime(doc, method):
         Half Days: {half_day_count} → Deduction: -{half_day_deduction}<br>
         Payment Days: {doc.payment_days}<br>
         Earnings Sum: {earnings_sum}<br>
-        Allowance: {flt(doc.custom_allowance or 0)}<br>
+        Allowance (added to Net Pay): {flt(doc.custom_allowance or 0)}<br>
         OT Amount: {doc.custom_overtime_amount}<br>
         Gross Pay: {doc.gross_pay}<br>
         Pay Rate (CTC): {doc.custom_per_day_rate}<br>
