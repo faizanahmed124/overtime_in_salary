@@ -17,11 +17,8 @@ def calculate_overtime(doc, method):
     doc.custom_per_day_rate = 0
     doc.custom_overtime_rate = 0
     doc.custom_duty_hours = 0
-<<<<<<< HEAD
-=======
     doc.custom_less_duty_hour = 0
     doc.custom_less_duty_hours_amount = 0
->>>>>>> df13d5959b23eeec035668374e408571b1f85353
 
     if not doc.employee or not doc.start_date or not doc.end_date:
         frappe.msgprint(
@@ -49,200 +46,19 @@ def calculate_overtime(doc, method):
         if gross_pay is None:
             gross_pay = earnings_sum
 
-<<<<<<< HEAD
-        doc.gross_pay = gross_pay
-        doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
+        doc.gross_pay = gross_pay   # ✅ allowance yahan include nahi hota
 
-        if is_permanent:
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
-            doc.custom_paid_salary = doc.net_pay + overtime_amount
-            doc.rounded_total = round_to_integer(doc.custom_paid_salary)
-            doc.custom_per_day_rate = flt(employee.ctc) or 0  # ← CTC from employee doc
-        else:
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
-            doc.custom_paid_salary = doc.net_pay
-            doc.rounded_total = round_to_integer(doc.net_pay)
-
-        doc.total_in_words = money_in_words(doc.rounded_total)
-
-    # ── Check overtime allowed ──
-    if not employee.custom_allow_overtime:
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
-        frappe.msgprint(
-            title="⚠️ Overtime Not Allowed",
-            msg=f"Employee {doc.employee} does not have overtime enabled.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="orange"
-        )
-        return
-
-    # ================================
-    # 1 GET BASE SALARY
-    # ================================
-    base_salary = frappe.db.get_value(
-        "Salary Structure Assignment",
-        {
-            "employee": doc.employee,
-            "docstatus": 1,
-            "from_date": ["<=", doc.start_date]
-        },
-        "base",
-        order_by="from_date DESC"
-    )
-
-    base_salary = flt(base_salary)
-
-    # For daily wages: base_salary is per day rate
-    if emp_type == "DAILY WAGES":
-        doc.custom_per_day_rate = flt(base_salary, 2)
-
-    if base_salary == 0:
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
-        frappe.msgprint(
-            title="⚠️ No Base Salary",
-            msg=f"No salary structure found for {doc.employee}.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="red"
-        )
-        return
-
-    # ================================
-    # 2 TOTAL OVERTIME HOURS
-    # ================================
-    total_overtime = frappe.db.sql("""
-        SELECT COALESCE(SUM(custom_overtime),0)
-        FROM `tabAttendance`
-        WHERE employee=%s
-        AND attendance_date BETWEEN %s AND %s
-        AND docstatus=1
-    """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
-
-    doc.custom_overtime_hours = total_overtime
-
-    # ================================
-    # 3 TOTAL DUTY HOURS
-    # ================================
-    total_dutyhours = frappe.db.sql("""
-        SELECT COALESCE(SUM(custom_duty_hours),0)
-        FROM `tabAttendance`
-        WHERE employee=%s
-        AND attendance_date BETWEEN %s AND %s
-        AND docstatus=1
-    """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
-
-    doc.custom_duty_hours = total_dutyhours
-
-    if doc.custom_overtime_hours == 0:
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
-        frappe.msgprint(
-            title="ℹ️ No Overtime Hours",
-            msg=f"No overtime hours found for {doc.employee} in this period.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="blue"
-        )
-        return
-
-    # ================================
-    # 4 OVERTIME CALCULATION
-    # ================================
-    calculation_details = ""
-
-    if emp_type == "PERMANENT":
-        adjusted_salary = base_salary * 0.85
-        month_days = date_diff(doc.end_date, doc.start_date) + 1
-        per_day_salary = adjusted_salary / month_days
-        overtime_rate_raw = (per_day_salary / 8) * 1.5
-        doc.custom_overtime_rate = overtime_rate_raw
-        raw_amount = doc.custom_overtime_rate * doc.custom_overtime_hours
-        doc.custom_overtime_amount = raw_amount
-        
-        
-         
-        calculation_details = f"""
-        <b>Permanent Employee:</b><br>
-        Base Salary: {base_salary}<br>
-        CTC: {flt(employee.ctc)}<br>
-        Adjusted (85%): {adjusted_salary:.2f}<br>
-        Month Days: {month_days}<br>
-        Per Day: {per_day_salary:.6f}<br>
-        OT Rate: {doc.custom_overtime_rate:.2f}<br>
-        OT Hours: {doc.custom_overtime_hours}<br>
-        <b>OT Amount: {doc.custom_overtime_amount}</b>
-        """
-
-    elif emp_type == "DAILY WAGES":
-        overtime_rate_raw = (base_salary / 8) * 1.5
-        doc.custom_overtime_rate = round_to_two_decimals(overtime_rate_raw)
-        raw_amount = doc.custom_overtime_rate * doc.custom_overtime_hours
-        doc.custom_overtime_amount = round_to_integer(raw_amount)
-
-        calculation_details = f"""
-        <b>Daily Wages Employee:</b><br>
-        Base Salary: {base_salary}<br>
-        OT Rate: {doc.custom_overtime_rate:.2f}<br>
-        OT Hours: {doc.custom_overtime_hours}<br>
-        <b>OT Amount: {doc.custom_overtime_amount}</b>
-        """
-
-    else:
-        frappe.msgprint(
-            title="⚠️ Employment Type Not Matched",
-            msg=f"Employment Type in DB: <b>'{employee.employment_type}'</b><br>Expected: 'PERMANENT' or 'DAILY WAGES'",
-            indicator="red"
-        )
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum)
-        return
-
-    # ================================
-    # 5 ROUND EARNINGS
-    # ================================
-    for row in doc.earnings:
-        original_amount = row.amount
-        row.amount = round_to_integer(original_amount)
-        if original_amount != row.amount:
-            calculation_details += f"<br>Rounded {row.salary_component}: {original_amount:.2f} → {row.amount}"
-
-    # ================================
-    # 6 GROSS PAY
-    # ================================
-    earnings_sum = sum(row.amount for row in doc.earnings)
-
-    if emp_type == "PERMANENT":
-        gross_pay = earnings_sum
-    else:
-        gross_pay = earnings_sum + doc.custom_overtime_amount
-
-    # ================================
-    # 7 FINALIZE
-    # ================================
-    finalize_pay(
-        earnings_sum=earnings_sum,
-        gross_pay=gross_pay,
-        overtime_amount=doc.custom_overtime_amount,
-        is_permanent=(emp_type == "PERMANENT")
-    )
-
-=======
-        # ✅ Allowance dono types ke liye gross pay mein add hoga
         allowance = flt(doc.custom_allowance or 0)
-        gross_pay = gross_pay + allowance
-
-        doc.gross_pay = gross_pay
 
         if is_permanent:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount + flt(doc.custom_less_duty_hours_amount or 0)
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
             doc.custom_paid_salary = doc.net_pay + overtime_amount
             doc.rounded_total = round_to_integer(doc.custom_paid_salary)
             doc.custom_per_day_rate = flt(employee.ctc) or 0
         else:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
             doc.custom_paid_salary = doc.net_pay
             doc.rounded_total = round_to_integer(doc.net_pay)
 
@@ -483,7 +299,6 @@ def calculate_overtime(doc, method):
         is_permanent=(emp_type == "PERMANENT")
     )
 
->>>>>>> df13d5959b23eeec035668374e408571b1f85353
     frappe.msgprint(
         title="✅ Overtime Calculated",
         msg=f"""
@@ -491,14 +306,10 @@ def calculate_overtime(doc, method):
         {calculation_details}
         <hr>
         Employment Type: {employee.employment_type}<br>
-<<<<<<< HEAD
-        Earnings Sum: {earnings_sum}<br>
-=======
         Half Days: {half_day_count} → Deduction: -{half_day_deduction}<br>
         Payment Days: {doc.payment_days}<br>
         Earnings Sum: {earnings_sum}<br>
-        Allowance: {flt(doc.custom_allowance or 0)}<br>
->>>>>>> df13d5959b23eeec035668374e408571b1f85353
+        Allowance (added to Net Pay): {flt(doc.custom_allowance or 0)}<br>
         OT Amount: {doc.custom_overtime_amount}<br>
         Gross Pay: {doc.gross_pay}<br>
         Pay Rate (CTC): {doc.custom_per_day_rate}<br>

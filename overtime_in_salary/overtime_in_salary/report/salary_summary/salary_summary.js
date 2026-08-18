@@ -29,16 +29,16 @@ frappe.query_reports["Salary Summary"] = {
             options:   "Branch",
         },
         {
+            fieldname: "employment_type",
+            label:     __("Employment Type"),
+            fieldtype: "Link",
+            options:   "Employment Type",
+        },
+        {
             fieldname: "mode_of_payment",
             label:     __("Mode of Payment"),
             fieldtype: "Link",
             options:   "Mode of Payment",
-        },
-        {
-            fieldname: "department",
-            label:     __("Department"),
-            fieldtype: "Link",
-            options:   "Department",
         },
     ],
 
@@ -46,6 +46,7 @@ frappe.query_reports["Salary Summary"] = {
         report.page.add_inner_button(__("🖨️ Print Report"), function () {
             let filters = report.get_values();
             let data    = report.data;
+            let columns = report.columns;   // ← actual columns from Python (all components)
 
             if (!data || data.length === 0) {
                 frappe.msgprint("No data to print. Please load the report first.");
@@ -58,71 +59,58 @@ frappe.query_reports["Salary Summary"] = {
             }
 
             function fmt(val) {
-                if (!val && val !== 0) return "—";
                 let n = parseFloat(val);
                 if (!n) return "—";
-                return "Rs " + n.toLocaleString("en-PK", {
-                    minimumFractionDigits:  2,
-                    maximumFractionDigits: 2,
+                return "Rs\u00a0" + n.toLocaleString("en-PK", {
+                    minimumFractionDigits: 0, maximumFractionDigits: 0,
                 });
             }
 
-            function fmtNum(val) {
-                if (!val && val !== 0) return "—";
-                let n = parseFloat(val);
-                if (!n) return "—";
-                return n.toLocaleString("en-PK", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            function fmtInt(val) {
+                return (val || 0);
             }
 
-            // ── Detect which optional columns have data ───────────
-            let dataRows = data.filter(r => (r.department || "").indexOf("Grand Total") === -1);
-
-            function colHasData(field) {
-                return dataRows.some(r => parseFloat(r[field] || 0) !== 0);
-            }
-
-            // Build active column list dynamically
-            let activeCols = [
-                { key: "department",      label: "Department / Section", always: true,  fmt: "text"    },
-                { key: "total_employees", label: "No. of Emp",           always: true,  fmt: "int"     },
-                { key: "amount",          label: "Amount",               always: false, fmt: "currency" },
-                { key: "ot_amount",       label: "OT.Amt",               always: false, fmt: "currency" },
-                { key: "gross_salary",    label: "G.Salary",             always: false, fmt: "currency" },
-                { key: "allowance",       label: "Allowance",            always: false, fmt: "currency" },
-                { key: "eobi",            label: "EOBI",                 always: false, fmt: "currency" },
-                { key: "income_tax",      label: "In.Tax",               always: false, fmt: "currency" },
-                { key: "net_salary",      label: "Net Salary",           always: false, fmt: "currency" },
-            ].filter(c => c.always || colHasData(c.key));
-
-            // ── Build header row ──────────────────────────────────
-            let thead_html = activeCols.map(c => {
-                let align = c.fmt === "text" ? "" : ` class="right"`;
+            // ── Build thead from actual report columns ────────────
+            let thead_html = columns.map(function (c) {
+                let isNum = ["Currency", "Float", "Int"].indexOf(c.fieldtype) !== -1;
+                let align = isNum ? ' class="right"' : '';
                 return `<th${align}>${c.label}</th>`;
             }).join("");
 
-            // ── Build data rows ───────────────────────────────────
+            // ── Build tbody ───────────────────────────────────────
             let rows_html = "";
 
             data.forEach(function (row, idx) {
-                let dept     = row.department || "";
-                let isGrand  = dept.indexOf("Grand Total") !== -1;
+                let dept    = row.department || "";
+                let isGrand = dept.indexOf("Grand Total") !== -1;
 
-                let cells = activeCols.map(c => {
-                    let val  = row[c.key];
+                let cells = columns.map(function (c) {
+                    let val  = row[c.fieldname];
                     let text = "";
-                    if (c.fmt === "text")     text = strip(dept);
-                    else if (c.fmt === "int") text = (val || 0);
-                    else if (c.fmt === "currency") text = fmt(val);
-                    else if (c.fmt === "num")      text = fmtNum(val);
 
-                    let cls  = c.fmt === "text" ? "dept-cell" : "right";
-                    if (c.key === "net_salary" && !isGrand) cls += " net-col";
-                    if (c.key === "net_salary" &&  isGrand) cls  = "right golden";
+                    if (c.fieldname === "department") {
+                        text = `<span class="dept-cell">${strip(dept)}</span>`;
+                    } else if (c.fieldtype === "Int") {
+                        text = fmtInt(val);
+                    } else if (c.fieldtype === "Currency" || c.fieldtype === "Float") {
+                        text = fmt(val);
+                    } else {
+                        text = val || "—";
+                    }
+
+                    let isNum = ["Currency", "Float", "Int"].indexOf(c.fieldtype) !== -1;
+                    let cls   = isNum ? "right" : "left";
+
+                    if (c.fieldname === "net_salary" && !isGrand) cls += " net-col";
+                    if (c.fieldname === "net_salary" &&  isGrand) cls  = "right golden";
+                    if (c.fieldname === "gross_salary")           cls += " gross-col";
+
                     return `<td class="${cls}">${text}</td>`;
                 }).join("");
 
-                let trClass = isGrand ? "grand-total-row" : (idx % 2 === 0 ? "even" : "odd");
-                rows_html  += `<tr class="${trClass}">${cells}</tr>`;
+                let trClass = isGrand ? "grand-total-row"
+                            : (idx % 2 === 0 ? "even" : "odd");
+                rows_html += `<tr class="${trClass}">${cells}</tr>`;
             });
 
             // ── Meta ─────────────────────────────────────────────
@@ -143,39 +131,42 @@ frappe.query_reports["Salary Summary"] = {
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600&display=swap');
 
+        @page { size: landscape; margin: 15mm 12mm; }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
             font-family: 'DM Sans', sans-serif;
             background: #fff;
             color: #1a1a2e;
-            padding: 36px 48px;
-            font-size: 12px;
+            padding: 28px 36px;
+            font-size: 10px;
         }
 
+        /* ── HEADER ── */
         .header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
             border-bottom: 3px solid #1a1a2e;
-            padding-bottom: 18px;
-            margin-bottom: 22px;
+            padding-bottom: 14px;
+            margin-bottom: 18px;
         }
 
         .company-name {
             font-family: 'Playfair Display', serif;
-            font-size: 26px;
+            font-size: 22px;
             font-weight: 900;
             color: #1a1a2e;
         }
 
         .report-title {
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 500;
             color: #666;
             letter-spacing: 3px;
             text-transform: uppercase;
-            margin-top: 5px;
+            margin-top: 4px;
         }
 
         .header-right { text-align: right; }
@@ -184,88 +175,116 @@ frappe.query_reports["Salary Summary"] = {
             display: inline-block;
             background: #1a1a2e;
             color: #fff;
-            font-size: 9px;
+            font-size: 8px;
             font-weight: 600;
             letter-spacing: 2px;
             text-transform: uppercase;
-            padding: 4px 14px;
+            padding: 3px 12px;
             border-radius: 20px;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
 
         .meta-grid {
             display: grid;
             grid-template-columns: auto auto;
-            gap: 3px 16px;
+            gap: 2px 12px;
         }
 
-        .meta-label { font-size: 9px; color: #999; text-transform: uppercase; letter-spacing: 1px; text-align: right; }
-        .meta-value { font-size: 11px; font-weight: 600; color: #1a1a2e; text-align: right; }
+        .meta-label { font-size: 8px;  color: #999; text-transform: uppercase; letter-spacing: 1px; text-align: right; }
+        .meta-value { font-size: 10px; font-weight: 600; color: #1a1a2e; text-align: right; }
 
         .accent-bar {
-            height: 4px;
+            height: 3px;
             background: linear-gradient(90deg, #1a1a2e 0%, #4a90d9 50%, #e8c84a 100%);
             border-radius: 2px;
-            margin-bottom: 24px;
+            margin-bottom: 18px;
         }
 
-        table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+        /* ── TABLE ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9.5px;
+            table-layout: auto;
+        }
 
-        thead tr { background: #1a1a2e; color: #fff; }
+        thead tr {
+            background: #fff;
+            color: #000;
+            border-bottom: 2px solid #000;
+        }
 
         thead th {
-            padding: 11px 10px;
-            font-size: 9.5px;
-            font-weight: 600;
-            letter-spacing: 1.2px;
+            padding: 8px 7px;
+            font-size: 8px;
+            font-weight: 900;
+            color: #000;
+            letter-spacing: 0.8px;
             text-transform: uppercase;
             white-space: nowrap;
+            border-right: 1px solid #ddd;
         }
 
         thead th.right { text-align: right; }
+
+        /* Separator between earnings / deductions */
+        thead th.sep-earn { border-left: 3px solid #5E81F4; }
+        thead th.sep-ded  { border-left: 3px solid #F45E7A; }
+        thead th.sep-net  { border-left: 3px solid #e8c84a; }
 
         tbody tr.even { background: #f8f9fc; }
         tbody tr.odd  { background: #ffffff; }
 
         tbody td {
-            padding: 10px 10px;
+            padding: 6px 7px;
             border-bottom: 1px solid #eef0f5;
-            color: #2d2d2d;
+            border-right: 1px solid #f0f0f0;
+            white-space: nowrap;
         }
 
-        td.dept-cell { font-weight: 700; color: #1a1a2e; font-size: 12px; }
-        td.right     { text-align: right; }
-        td.net-col   { font-weight: 700; color: #1a5276; }
+        td.left     { text-align: left; font-weight: 700; color: #1a1a2e; }
+        td.right    { text-align: right; }
+        td.net-col  { font-weight: 700; color: #1a5276; }
+        td.gross-col{ font-weight: 600; color: #1a5276; }
 
+        span.dept-cell { font-weight: 700; }
+
+        /* Grand total row */
         tr.grand-total-row td {
-            background: #1a1a2e !important;
-            color: #fff !important;
-            font-weight: 700;
-            font-size: 12px;
-            padding: 12px 10px;
-            border: none;
+            background: #fff !important;
+            color: #000 !important;
+            font-weight: 900;
+            font-size: 10px;
+            padding: 8px 7px;
+            border-top: 2px solid #000;
+            border-bottom: 2px solid #000;
         }
 
-        tr.grand-total-row td.golden { color: #e8c84a !important; font-size: 13px; }
+        tr.grand-total-row td.golden {
+            color: #000 !important;
+            font-weight: 900;
+            font-size: 11px;
+        }
 
+        /* ── FOOTER ── */
         .footer {
-            margin-top: 36px;
+            margin-top: 28px;
             display: flex;
             justify-content: space-between;
             align-items: flex-end;
             border-top: 1px solid #ddd;
-            padding-top: 16px;
+            padding-top: 12px;
         }
 
-        .note { font-size: 9px; color: #aaa; line-height: 1.8; }
+        .note { font-size: 8px; color: #aaa; line-height: 1.8; }
 
-        .signatures { display: flex; gap: 56px; }
+        .signatures { display: flex; gap: 48px; }
         .sig-block  { text-align: center; }
-        .sig-line   { width: 140px; border-top: 1.5px solid #1a1a2e; margin-bottom: 6px; }
-        .sig-label  { font-size: 9px; color: #666; letter-spacing: 1px; text-transform: uppercase; }
+        .sig-line   { width: 120px; border-top: 1.5px solid #1a1a2e; margin-bottom: 5px; }
+        .sig-label  { font-size: 8px; color: #666; letter-spacing: 1px; text-transform: uppercase; }
 
         @media print {
-            body  { padding: 15px 24px; }
+            body  { padding: 0; }
             thead { display: table-header-group; }
         }
     </style>
@@ -275,7 +294,7 @@ frappe.query_reports["Salary Summary"] = {
     <div class="header">
         <div>
             <div class="company-name">${company}</div>
-            <div class="report-title">Department Wise Salary Summary</div>
+            <div class="report-title">Department Wise Salary Summary — All Earnings &amp; Deductions</div>
         </div>
         <div class="header-right">
             <div class="badge">Payroll Report</div>
@@ -317,7 +336,7 @@ frappe.query_reports["Salary Summary"] = {
 </body>
 </html>`;
 
-            let w = window.open("", "_blank", "width=1100,height=750");
+            let w = window.open("", "_blank", "width=1400,height=800");
             w.document.write(html);
             w.document.close();
             w.focus();
