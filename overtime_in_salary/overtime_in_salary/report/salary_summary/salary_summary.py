@@ -33,12 +33,13 @@ def _build_conditions(filters):
         # Specific branch selected — show only that branch
         cond += " AND ss.branch = %(branch)s"
     else:
-        # No branch — exclude ATS HOUSE STAFF and ATS HOUSE SECURITY departments
-        # %% used because frappe.db.sql uses % for param binding
-        cond += " AND IFNULL(e.department, '') NOT LIKE 'ATS HOUSE STAFF%%'"
-        cond += " AND IFNULL(e.department, '') NOT LIKE 'ATS HOUSE SECURITY%%'"
+        # No branch — exclude ATS HOUSE STAFF and ATS HOUSE SECURITY
+        # All from salary slip department field
+        cond += " AND IFNULL(ss.department, '') NOT LIKE 'ATS HOUSE STAFF%%'"
+        cond += " AND IFNULL(ss.department, '') NOT LIKE 'ATS HOUSE SECURITY%%'"
     if filters.get("employment_type"):
-        cond += " AND e.employment_type = %(employment_type)s"
+        # Use custom field on slip, fallback to employee table if null
+        cond += " AND IFNULL(ss.custom_employment_type, e.employment_type) = %(employment_type)s"
     if filters.get("mode_of_payment"):
         cond += " AND ss.mode_of_payment = %(mode_of_payment)s"
     return cond
@@ -113,20 +114,20 @@ def get_data(filters):
     base = frappe.db.sql(
         f"""
         SELECT
-            IFNULL(e.department, '— No Department —')   AS department,
-            COUNT(DISTINCT ss.employee)                  AS total_employees,
+            IFNULL(ss.department, '— No Department —')      AS department,
+            COUNT(DISTINCT ss.employee)                      AS total_employees,
             SUM(IFNULL(ss.custom_overtime_amount, 0))        AS ot_amount,
             SUM(IFNULL(ss.custom_allowance, 0))              AS custom_allowance,
             SUM(IFNULL(ss.gross_pay, 0))                     AS gross_salary,
             SUM(IFNULL(ss.total_deduction, 0))               AS total_deductions,
-            SUM(IFNULL(ss.custom_incone_tax_amount, 0))         AS custom_income_tax,
-            SUM(IFNULL(ss.custom_less_duty_hours_amount, 0))    AS less_duty_hours,
+            SUM(IFNULL(ss.custom_incone_tax_amount, 0))      AS custom_income_tax,
+            SUM(IFNULL(ss.custom_less_duty_hours_amount, 0)) AS less_duty_hours,
             SUM(IFNULL(NULLIF(ss.rounded_total,0), ss.net_pay)) AS net_salary
         FROM `tabSalary Slip` ss
         LEFT JOIN `tabEmployee` e ON e.name = ss.employee
         WHERE {cond}
-        GROUP BY IFNULL(e.department, '— No Department —')
-        ORDER BY IFNULL(e.department, '') ASC
+        GROUP BY IFNULL(ss.department, '— No Department —')
+        ORDER BY IFNULL(ss.department, '') ASC
         """,
         filters,
         as_dict=True,
@@ -139,16 +140,16 @@ def get_data(filters):
     comp_rows = frappe.db.sql(
         f"""
         SELECT
-            IFNULL(e.department, '— No Department —')  AS department,
+            IFNULL(ss.department, '— No Department —') AS department,
             sd.salary_component,
             sd.parentfield,
             SUM(sd.amount)                             AS amount
         FROM `tabSalary Detail` sd
-        JOIN  `tabSalary Slip` ss ON ss.name = sd.parent
-        LEFT JOIN `tabEmployee` e  ON e.name  = ss.employee
+        JOIN `tabSalary Slip` ss ON ss.name = sd.parent
+        LEFT JOIN `tabEmployee` e ON e.name = ss.employee
         WHERE {cond}
           AND sd.amount > 0
-        GROUP BY IFNULL(e.department, '— No Department —'),
+        GROUP BY IFNULL(ss.department, '— No Department —'),
                  sd.salary_component, sd.parentfield
         ORDER BY sd.parentfield DESC, sd.salary_component ASC
         """,
@@ -220,8 +221,8 @@ def get_chart(data):
 
     return {
         "data":       {"labels": [r.get("department") or "—" for r in rows], "datasets": datasets},
-        "type":       "bar",
-        "colors":     ["#F4A25E", "#38BDF8", "#5EF4A2"],
+        "type":       "percentage",
+        "colors":     ["#DD7335", "#38BDF8", "#5EF4A2"],
         "barOptions": {"stacked": False, "spaceRatio": 0.3},
         "height":     280,
     }
