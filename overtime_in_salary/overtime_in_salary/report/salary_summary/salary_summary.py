@@ -21,8 +21,6 @@ def _safe_fn(prefix, name):
     return (prefix + re.sub(r"[^a-z0-9]", "_", name.lower().strip()))[:52]
 
 
-HOUSE_STAFF_BRANCH = "ATS HOUSE "
-
 def _build_conditions(filters):
     cond = "ss.docstatus = 1"
     if filters.get("company"):
@@ -35,8 +33,10 @@ def _build_conditions(filters):
         # Specific branch selected — show only that branch
         cond += " AND ss.branch = %(branch)s"
     else:
-        # No branch selected — exclude ATS HOUSE  automatically
-        cond += f" AND ss.branch != '{HOUSE_STAFF_BRANCH}'"
+        # No branch — exclude ATS HOUSE STAFF and ATS HOUSE SECURITY departments
+        # %% used because frappe.db.sql uses % for param binding
+        cond += " AND IFNULL(e.department, '') NOT LIKE 'ATS HOUSE STAFF%%'"
+        cond += " AND IFNULL(e.department, '') NOT LIKE 'ATS HOUSE SECURITY%%'"
     if filters.get("employment_type"):
         cond += " AND e.employment_type = %(employment_type)s"
     if filters.get("mode_of_payment"):
