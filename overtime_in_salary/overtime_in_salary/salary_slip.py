@@ -2,13 +2,18 @@ import frappe
 from frappe.utils import date_diff, flt, money_in_words
 from decimal import Decimal, ROUND_HALF_UP
 
+from hrms.payroll.doctype.salary_slip.salary_slip import SalarySlip
+
+
 def round_to_two_decimals(value):
     d = Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     return float(d)
 
+
 def round_to_integer(value):
     d = Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
     return int(d)
+
 
 def calculate_overtime(doc, method):
     # Initialize fields
@@ -322,3 +327,25 @@ def calculate_overtime(doc, method):
         """,
         indicator="green"
     )
+
+
+class CustomSalarySlip(SalarySlip):
+    """Standard HRMS Salary Slip + custom overtime / less-duty / allowance logic.
+
+    Every original method (validate, calculate_net_pay, tax, loans, LWP,
+    timesheets, emailing, status, etc.) is inherited untouched.
+    """
+
+    def validate(self):
+        # Run the full original validation + calculation first
+        super().validate()
+
+        # Then apply the custom overtime logic exactly once
+        if not self.flags.get("custom_overtime_done"):
+            calculate_overtime(self, "validate")
+            self.flags.custom_overtime_done = True
+
+            # keep the derived month/year-to-date figures in line with the final net pay
+            self.compute_year_to_date()
+            self.compute_month_to_date()
+            self.compute_component_wise_year_to_date()
