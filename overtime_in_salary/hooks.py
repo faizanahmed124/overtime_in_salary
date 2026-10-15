@@ -19,12 +19,20 @@ doc_events = {
         "on_submit": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_additional_salary_change",
         "on_cancel": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_additional_salary_change",
     },
+    "Salary Structure Assignment": {
+        "validate": "overtime_in_salary.overtime_in_salary.employee_salary_info.validate_assignment_change"
+    },
     "Employee": {
         "on_update": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_employee_change",
     },
 }
+override_doctype_class = {
+    "Leave Type": "overtime_in_salary.overtime_in_salary.overrides.leave_type.CustomLeaveType"
+}
+
 doctype_js = {
-    "Salary Slip": "public/js/salary_slip.js"
+    "Salary Slip": "public/js/salary_slip.js",
+    "Employee": "public/js/employee.js",
 }
 
 

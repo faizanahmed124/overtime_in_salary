@@ -10,6 +10,60 @@ def round_to_integer(value):
     d = Decimal(str(value)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
     return int(d)
 
+def set_working_and_payment_days(doc):
+    """Working Days = days actually present (half day = 0.5).
+    Leave With Pay = approved paid-leave days (non-LWP leave types).
+    Payment Days = Working Days + Leave With Pay."""
+    row = frappe.db.sql("""
+        SELECT
+            COALESCE(SUM(CASE
+                WHEN a.status IN ('Present', 'Work From Home') THEN 1
+                WHEN a.status = 'Half Day' THEN 0.5
+                ELSE 0 END), 0),
+            COALESCE(SUM(CASE
+                WHEN a.status = 'On Leave' AND COALESCE(lt.is_lwp, 0) = 0 THEN 1
+                WHEN a.status = 'Half Day' AND a.leave_type IS NOT NULL AND a.leave_type != ''
+                     AND COALESCE(lt.is_lwp, 0) = 0 THEN 0.5
+                ELSE 0 END), 0)
+        FROM `tabAttendance` a
+        LEFT JOIN `tabLeave Type` lt ON lt.name = a.leave_type
+        WHERE a.employee=%s
+        AND a.attendance_date BETWEEN %s AND %s
+        AND a.docstatus=1
+    """, (doc.employee, doc.start_date, doc.end_date))[0]
+
+    doc.total_working_days = flt(row[0])
+    doc.custom_leave_with_pay = flt(row[1])
+    doc.payment_days = doc.total_working_days + doc.custom_leave_with_pay
+
+def apply_employee_eobi(doc, employee):
+    """The Employee form (EOBI Applicable + EOBI Amount) is the source of truth for EOBI.
+    Structures are shared between employees, so the slip's EOBI deduction is aligned here:
+    not applicable -> 0, applicable -> the employee's amount (row added if the structure lacks it)."""
+    target = flt(employee.custom_eobi_amount) if employee.custom_eobi_applicable else 0
+
+    rows = [r for r in doc.get("deductions") if "EOBI" in (r.salary_component or "").upper()]
+    if not rows:
+        if not target or not frappe.db.exists("Salary Component", "EOBI"):
+            return
+        row = doc.append(
+            "deductions",
+            {"salary_component": "EOBI", "abbr": frappe.db.get_value("Salary Component", "EOBI", "salary_component_abbr")},
+        )
+        rows = [row]
+        row.amount = 0
+
+    # one EOBI deduction per slip: the first row carries the amount, duplicates are zeroed
+    for i, row in enumerate(rows):
+        new_amount = target if i == 0 else 0
+        delta = flt(new_amount) - flt(row.amount)
+        row.amount = new_amount
+        row.default_amount = new_amount
+        row.additional_amount = 0
+        if delta and not row.get("do_not_include_in_total"):
+            doc.total_deduction = flt(doc.total_deduction) + delta
+            doc.base_total_deduction = flt(doc.get("base_total_deduction")) + delta * flt(doc.get("exchange_rate") or 1)
+
 def calculate_overtime(doc, method):
     # Initialize fields
     doc.custom_overtime_hours = 0
@@ -29,12 +83,20 @@ def calculate_overtime(doc, method):
         return
 
     employee = frappe.get_doc("Employee", doc.employee)
+    apply_employee_eobi(doc, employee)
     income_tax_amount = flt(employee.custom_income_tax_amount) or 0
     emp_type = (employee.employment_type or "").upper().strip()
+    is_permanent = emp_type == "PERMANENT"
 
     # ================================
-    # HELPER: round all earning rows
+    # HELPER: only rows that count in ERPNext totals
+    # (rows flagged "do not include in total" must never change pay)
     # ================================
+    def counted_earnings_sum():
+        return sum(
+            flt(row.amount) for row in doc.earnings if not row.get("do_not_include_in_total")
+        )
+
     def round_all_earnings():
         for row in doc.earnings:
             row.amount = round_to_integer(row.amount)
@@ -46,83 +108,51 @@ def calculate_overtime(doc, method):
         if gross_pay is None:
             gross_pay = earnings_sum
 
-        doc.gross_pay = gross_pay   # ✅ allowance yahan include nahi hota
+        doc.gross_pay = gross_pay   # allowance is not part of gross
 
         allowance = flt(doc.custom_allowance or 0)
+        doc.custom_total_earnings = flt(doc.gross_pay) + allowance   # gross + allowance, shown as Total Earnings in print
+        loan_repayment = flt(doc.get("total_loan_repayment"))   # ERPNext deducts this from net pay
 
         if is_permanent:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount + flt(doc.custom_less_duty_hours_amount or 0)
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment + allowance)
             doc.custom_paid_salary = doc.net_pay + overtime_amount
             doc.rounded_total = round_to_integer(doc.custom_paid_salary)
             doc.custom_per_day_rate = flt(employee.ctc) or 0
         else:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction + allowance)  # ✅ allowance yahan add
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment + allowance)
             doc.custom_paid_salary = doc.net_pay
             doc.rounded_total = round_to_integer(doc.net_pay)
 
         doc.total_in_words = money_in_words(doc.rounded_total)
 
-    # ── Check overtime allowed ──
-    if not employee.custom_allow_overtime:
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
-        frappe.msgprint(
-            title="⚠️ Overtime Not Allowed",
-            msg=f"Employee {doc.employee} does not have overtime enabled.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="orange"
-        )
-        return
-
     # ================================
     # 1 GET BASE SALARY
     # ================================
-    base_salary = frappe.db.get_value(
-        "Salary Structure Assignment",
-        {
-            "employee": doc.employee,
-            "docstatus": 1,
-            "from_date": ["<=", doc.start_date]
-        },
-        "base",
-        order_by="from_date DESC"
+    base_salary = flt(
+        frappe.db.get_value(
+            "Salary Structure Assignment",
+            {
+                "employee": doc.employee,
+                "docstatus": 1,
+                "from_date": ["<=", doc.start_date]
+            },
+            "base",
+            order_by="from_date DESC"
+        )
     )
-
-    base_salary = flt(base_salary)
 
     if emp_type == "DAILY WAGES":
         doc.custom_per_day_rate = flt(base_salary, 2)
 
-    if base_salary == 0:
-        round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
-        frappe.msgprint(
-            title="⚠️ No Base Salary",
-            msg=f"No salary structure found for {doc.employee}.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="red"
-        )
-        return
+    month_days = date_diff(doc.end_date, doc.start_date) + 1
 
     # ================================
-    # 2 TOTAL OVERTIME HOURS
+    # 2 DUTY HOURS (informational)
     # ================================
-    total_overtime = frappe.db.sql("""
-        SELECT COALESCE(SUM(custom_overtime),0)
-        FROM `tabAttendance`
-        WHERE employee=%s
-        AND attendance_date BETWEEN %s AND %s
-        AND docstatus=1
-    """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
-
-    doc.custom_overtime_hours = total_overtime
-
-    # ================================
-    # 3 TOTAL DUTY HOURS
-    # ================================
-    total_dutyhours = frappe.db.sql("""
+    doc.custom_duty_hours = frappe.db.sql("""
         SELECT COALESCE(SUM(custom_duty_hours),0)
         FROM `tabAttendance`
         WHERE employee=%s
@@ -130,89 +160,104 @@ def calculate_overtime(doc, method):
         AND docstatus=1
     """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
 
-    doc.custom_duty_hours = total_dutyhours
+    set_working_and_payment_days(doc)
 
     # ================================
-    # 3.7, 3.8, 3.9 — ONLY FOR PERMANENT
+    # 3 HALF DAYS
+    # Half days that ERPNext already prorated (half_day_status=Absent, or
+    # linked to a leave type) are already reflected in earnings, so only the
+    # remaining ones are deducted here (no double deduction). Payment days
+    # already count every half day as 0.5 (see set_working_and_payment_days).
     # ================================
-    if emp_type == "PERMANENT":
-
-        # ================================
-        # 3.7 TOTAL LESS DUTY HOURS
-        # ================================
-        total_less_duty_hours = frappe.db.sql("""
-            SELECT COALESCE(SUM(custom_less_duty_hour),0)
-            FROM `tabAttendance`
-            WHERE employee=%s
-            AND attendance_date BETWEEN %s AND %s
-            AND docstatus=1
-        """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
-
-        doc.custom_less_duty_hour = flt(total_less_duty_hours)
-
-        # ================================
-        # 3.8 LDH vs OVERTIME ADJUSTMENT
-        # ================================
-        ldh = flt(doc.custom_less_duty_hour)
-        ot  = flt(doc.custom_overtime_hours)
-
-        if ot > ldh:
-            doc.custom_overtime_hours = round(ot - ldh, 2)
-            doc.custom_less_duty_hour = 0
-        elif ldh > ot:
-            doc.custom_less_duty_hour = round(ldh - ot, 2)
-            doc.custom_overtime_hours = 0
-        else:
-            doc.custom_overtime_hours = 0
-            doc.custom_less_duty_hour = 0
-
-        # ================================
-        # 3.9 LDH AMOUNT CALCULATION
-        # ================================
-        if doc.custom_less_duty_hour > 0:
-            month_days    = date_diff(doc.end_date, doc.start_date) + 1
-            per_day_rate  = flt(base_salary) / month_days
-            per_hour_rate = per_day_rate / 8
-            doc.custom_less_duty_hours_amount = round_to_two_decimals(
-                per_hour_rate * doc.custom_less_duty_hour
-            )
-        else:
-            doc.custom_less_duty_hours_amount = 0
-
-    # ================================
-    # 3.5 HALF DAY COUNT & PAYMENT DAYS ADJUST
-    # ================================
-    half_day_count = frappe.db.sql("""
-        SELECT COUNT(*)
+    half_day_rows = frappe.db.sql("""
+        SELECT name
         FROM `tabAttendance`
         WHERE employee=%s
         AND attendance_date BETWEEN %s AND %s
         AND status='Half Day'
         AND docstatus=1
-    """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0
-
+        AND COALESCE(half_day_status,'') != 'Absent'
+        AND COALESCE(leave_type,'') = ''
+    """, (doc.employee, doc.start_date, doc.end_date))
+    half_day_count = len(half_day_rows)
     half_day_deduction = 0
 
-    if half_day_count > 0:
-        doc.payment_days = flt(doc.payment_days) - (half_day_count * 0.5)
-
-        month_days = date_diff(doc.end_date, doc.start_date) + 1
-        per_day = flt(base_salary) / month_days
+    if half_day_count > 0 and base_salary > 0:
+        per_day = base_salary / month_days
         half_day_deduction = round_to_integer(per_day * 0.5 * half_day_count)
 
         if doc.earnings:
-            doc.earnings[0].amount = round_to_integer(
-                flt(doc.earnings[0].amount) - half_day_deduction
+            doc.earnings[0].amount = max(
+                0, round_to_integer(flt(doc.earnings[0].amount) - half_day_deduction)
             )
 
-    if doc.custom_overtime_hours == 0:
+    # ================================
+    # 4 OVERTIME / LESS DUTY HOURS (hours)
+    # Half Day attendance is excluded from both: it is already paid at half
+    # salary above, and its auto-generated 7.5 "less duty hours" would
+    # otherwise deduct the same time a second time.
+    # ================================
+    overtime_allowed = bool(employee.custom_allow_overtime)
+
+    total_overtime = 0
+    if overtime_allowed:
+        total_overtime = flt(frappe.db.sql("""
+            SELECT COALESCE(SUM(custom_overtime),0)
+            FROM `tabAttendance`
+            WHERE employee=%s
+            AND attendance_date BETWEEN %s AND %s
+            AND docstatus=1
+            AND status != 'Half Day'
+        """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0)
+
+    ldh = 0
+    if is_permanent:
+        ldh = flt(frappe.db.sql("""
+            SELECT COALESCE(SUM(custom_less_duty_hour),0)
+            FROM `tabAttendance`
+            WHERE employee=%s
+            AND attendance_date BETWEEN %s AND %s
+            AND docstatus=1
+            AND status != 'Half Day'
+        """, (doc.employee, doc.start_date, doc.end_date))[0][0] or 0)
+
+        # LDH vs overtime adjustment (overtime offsets less duty hours)
+        if total_overtime > ldh:
+            total_overtime = round(total_overtime - ldh, 2)
+            ldh = 0
+        elif ldh > total_overtime:
+            ldh = round(ldh - total_overtime, 2)
+            total_overtime = 0
+        else:
+            total_overtime = 0
+            ldh = 0
+
+        if ldh > 0 and base_salary > 0:
+            per_hour_rate = (base_salary / month_days) / 8
+            doc.custom_less_duty_hours_amount = round_to_two_decimals(per_hour_rate * ldh)
+
+    doc.custom_overtime_hours = total_overtime
+    doc.custom_less_duty_hour = ldh
+
+    # ── Nothing overtime-related to add: just finalize ──
+    if base_salary == 0 or total_overtime == 0:
         round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum, is_permanent=(emp_type == "PERMANENT"))
+        finalize_pay(counted_earnings_sum(), is_permanent=is_permanent)
+        if not overtime_allowed:
+            msg = f"Employee {doc.employee} does not have overtime enabled."
+            title, indicator = "⚠️ Overtime Not Allowed", "orange"
+        elif base_salary == 0:
+            msg = f"No salary structure found for {doc.employee}."
+            title, indicator = "⚠️ No Base Salary", "red"
+        else:
+            msg = f"No overtime hours found for {doc.employee} in this period."
+            title, indicator = "ℹ️ No Overtime Hours", "blue"
         frappe.msgprint(
-            title="ℹ️ No Overtime Hours",
-            msg=f"No overtime hours found for {doc.employee} in this period.<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
-            indicator="blue"
+            title=title,
+            msg=f"{msg}<br>Half Days: {half_day_count} → Deduction: -{half_day_deduction}"
+                f"<br>Less Duty Hours: {doc.custom_less_duty_hour} → Deduction: -{doc.custom_less_duty_hours_amount}"
+                f"<br><b>Income Tax {income_tax_amount} added to deduction.</b>",
+            indicator=indicator
         )
         return
 
@@ -223,12 +268,11 @@ def calculate_overtime(doc, method):
 
     if emp_type == "PERMANENT":
         adjusted_salary = round_to_integer(base_salary * 0.85)
-        month_days = date_diff(doc.end_date, doc.start_date) + 1
         per_day_salary = adjusted_salary / month_days
         overtime_rate_raw = (per_day_salary / 8) * 1.5
         doc.custom_overtime_rate = round_to_two_decimals(overtime_rate_raw)
         raw_amount = doc.custom_overtime_rate * doc.custom_overtime_hours
-        doc.custom_overtime_amount = round(raw_amount)
+        doc.custom_overtime_amount = round_to_integer(raw_amount)
 
         calculation_details = f"""
         <b>Permanent Employee:</b><br>
@@ -266,8 +310,7 @@ def calculate_overtime(doc, method):
             indicator="red"
         )
         round_all_earnings()
-        earnings_sum = sum(row.amount for row in doc.earnings)
-        finalize_pay(earnings_sum)
+        finalize_pay(counted_earnings_sum())
         return
 
     # ================================
@@ -282,7 +325,7 @@ def calculate_overtime(doc, method):
     # ================================
     # 6 GROSS PAY
     # ================================
-    earnings_sum = sum(row.amount for row in doc.earnings)
+    earnings_sum = counted_earnings_sum()
 
     if emp_type == "PERMANENT":
         gross_pay = earnings_sum

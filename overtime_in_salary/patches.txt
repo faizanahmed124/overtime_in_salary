@@ -4,3 +4,4 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+overtime_in_salary.patches.backfill_employee_eobi

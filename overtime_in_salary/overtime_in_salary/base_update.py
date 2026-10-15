@@ -1,34 +1,42 @@
 import frappe
+from frappe.utils import flt
 
 
-def update_single_employee_assignments(doc, method):
+def get_base_for_employee(employment_type, ctc, custom_basic_pay):
+    """PERMANENT -> CTC, DAILY WAGES -> Basic Pay. None when the type has no mapping."""
+    if employment_type == "PERMANENT":
+        return ctc
+    if employment_type == "DAILY WAGES":
+        return custom_basic_pay
+    return None
+
+
+def update_single_employee_assignments(doc, method=None):
     """
-    Triggered automatically when an Employee is saved (on_update).
-    Updates the 'base' field for ALL related Salary Structure Assignments
-    (draft or submitted) belonging to this employee.
+    Pushes the employee's CTC / Basic Pay into 'base' on ALL of the employee's
+    Salary Structure Assignments (draft or submitted, not cancelled).
+    Runs inside the Employee save transaction (no commit here); returns True
+    when at least one assignment changed.
     """
-    new_base = None
-    if doc.employment_type == "PERMANENT":
-        new_base = doc.ctc
-    elif doc.employment_type == "DAILY WAGES":
-        new_base = doc.custom_basic_pay
+    new_base = get_base_for_employee(doc.employment_type, doc.ctc, doc.custom_basic_pay)
 
-    if new_base is None:
-        return
+    # an empty/zero amount must never wipe the base used by payroll
+    if not flt(new_base):
+        return False
 
-    assignments = frappe.get_all(
+    changed = False
+    for a in frappe.get_all(
         "Salary Structure Assignment",
         filters={"employee": doc.name, "docstatus": ["!=", 2]},
-        pluck="name",
-    )
+        fields=["name", "base"],
+    ):
+        if flt(a.base) != flt(new_base):
+            frappe.db.set_value(
+                "Salary Structure Assignment", a.name, "base", flt(new_base), update_modified=False
+            )
+            changed = True
 
-    for name in assignments:
-        frappe.db.set_value(
-            "Salary Structure Assignment", name, "base", new_base, update_modified=False
-        )
-
-    if assignments:
-        frappe.db.commit()
+    return changed
 
 
 @frappe.whitelist()

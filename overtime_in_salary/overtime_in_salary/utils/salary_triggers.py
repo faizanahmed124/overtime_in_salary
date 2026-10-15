@@ -1,6 +1,9 @@
 import frappe
+from frappe.utils import flt
 
+from overtime_in_salary.overtime_in_salary.base_update import update_single_employee_assignments
 from overtime_in_salary.overtime_in_salary.salary_slip import calculate_overtime
+from overtime_in_salary.overtime_in_salary.utils.draft_slip_refresh import _refetch_linked_fields
 
 
 # ============================================================
@@ -25,6 +28,7 @@ def bulk_recalculate_selected_slips(names):
 
 			# Employee master se mode_of_payment, bank_name, bank_account_no
 			# dobara fetch karo — isi ki wajah se pehle update nahi ho raha tha.
+			_refetch_linked_fields(doc)
 			doc.pull_emp_details()
 
 			doc.get_working_days_details(lwp=doc.leave_without_pay)
@@ -71,6 +75,7 @@ def auto_recalculate_draft_slips(employee, from_date=None, to_date=None):
 
 			# Employee master se mode_of_payment, bank_name, bank_account_no
 			# dobara fetch karo.
+			_refetch_linked_fields(doc)
 			doc.pull_emp_details()
 
 			doc.get_working_days_details(lwp=doc.leave_without_pay)
@@ -117,18 +122,32 @@ def on_employee_change(doc, method):
 	if not changed:
 		return
 
-	relevant_fields = [
+	# Salary amounts on the Employee drive "base" of the Salary Structure Assignments.
+	# Sync them first (same transaction) so the draft slips recalculated below see the new base.
+	base_fields = ["employment_type", "ctc", "custom_basic_pay"]
+	if any(doc.get(f) != changed.get(f) for f in base_fields):
+		update_single_employee_assignments(doc, method)
+
+	relevant_fields = base_fields + [
 		"custom_allow_overtime",
 		"custom_income_tax_amount",
-		"ctc",
-		"employment_type",
+		"custom_eobi_applicable",
+		"custom_eobi_amount",
+		"custom_medical_allow",
+		"custom_medical_amount",
 		"salary_mode",       # Mode of Payment (bank/cash/cheque)
 		"bank_name",
 		"bank_ac_no",
+		"designation",
+		"department",
+		"branch",
+		"employee_name",
+		"company",
 	]
 	if any(doc.get(f) != changed.get(f) for f in relevant_fields):
 		frappe.enqueue(
 			auto_recalculate_draft_slips,
 			queue="short",
+			enqueue_after_commit=True,   # worker must see the committed base
 			employee=doc.name,
 		)
