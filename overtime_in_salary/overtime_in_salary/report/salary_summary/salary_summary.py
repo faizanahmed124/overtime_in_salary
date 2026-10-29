@@ -68,10 +68,6 @@ def get_columns(records, earn_comps, ded_comps):
             cols.append({"label": comp, "fieldname": fn,
                          "fieldtype": "Currency", "width": 140, "precision": 0})
 
-    # Custom Allowance (earning — custom field on Salary Slip)
-    cols.append({"label": "Allowance", "fieldname": "custom_allowance",
-                 "fieldtype": "Currency", "width": 130, "precision": 0})
-
     # OT Amount (custom field on Salary Slip)
     if has_val("ot_amount"):
         cols.append({"label": "OT Amount", "fieldname": "ot_amount",
@@ -117,7 +113,6 @@ def get_data(filters):
             IFNULL(ss.department, '— No Department —')      AS department,
             COUNT(DISTINCT ss.employee)                      AS total_employees,
             SUM(IFNULL(ss.custom_overtime_amount, 0))        AS ot_amount,
-            SUM(IFNULL(ss.custom_allowance, 0))              AS custom_allowance,
             SUM(IFNULL(ss.gross_pay, 0))                     AS gross_salary,
             SUM(IFNULL(ss.total_deduction, 0))               AS total_deductions,
             SUM(IFNULL(ss.custom_incone_tax_amount, 0))      AS custom_income_tax,
@@ -186,7 +181,6 @@ def get_data(filters):
         "department":       "<b>Grand Total</b>",
         "total_employees":  sum(r.total_employees or 0  for r in base),
         "ot_amount":          sum(flt(r.ot_amount)          for r in base),
-        "custom_allowance":   sum(flt(r.custom_allowance)   for r in base),
         "gross_salary":       sum(flt(r.gross_salary)       for r in base),
         "total_deductions":   sum(flt(r.total_deductions)   for r in base),
         "custom_income_tax":  sum(flt(r.custom_income_tax)  for r in base),

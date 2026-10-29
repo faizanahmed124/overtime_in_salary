@@ -23,6 +23,7 @@ doc_events = {
         "validate": "overtime_in_salary.overtime_in_salary.employee_salary_info.validate_assignment_change"
     },
     "Employee": {
+        "validate": "overtime_in_salary.overtime_in_salary.utils.employee_eobi.validate",
         "on_update": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_employee_change",
     },
 }

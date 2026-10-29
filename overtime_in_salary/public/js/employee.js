@@ -5,6 +5,10 @@ frappe.ui.form.on("Employee", {
 	custom_eobi_applicable(frm) {
 		if (!frm.doc.custom_eobi_applicable) {
 			frm.set_value("custom_eobi_amount", 0);
+			frm.set_value("custom_eobi_deduction_start_date", null);
+		} else if (!frm.doc.custom_eobi_deduction_start_date) {
+			// ticked now: today's date, editable; already-ticked employees keep their own date
+			frm.set_value("custom_eobi_deduction_start_date", frappe.datetime.get_today());
 		}
 	},
 });
