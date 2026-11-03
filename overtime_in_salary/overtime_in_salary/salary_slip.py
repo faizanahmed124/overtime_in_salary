@@ -15,13 +15,13 @@ def round_to_integer(value):
     return int(d)
 
 def set_working_and_payment_days(doc):
-    """Working Days = days actually present (half day = 0.5).
+    """Working Days = days actually present (half day = 0.5) plus Holiday days (paid).
     Leave With Pay = approved paid-leave days (non-LWP leave types).
     Payment Days = Working Days + Leave With Pay."""
     row = frappe.db.sql("""
         SELECT
             COALESCE(SUM(CASE
-                WHEN a.status IN ('Present', 'Work From Home') THEN 1
+                WHEN a.status IN ('Present', 'Work From Home', 'Holiday') THEN 1
                 WHEN a.status = 'Half Day' THEN 0.5
                 ELSE 0 END), 0),
             COALESCE(SUM(CASE
@@ -101,6 +101,15 @@ def calculate_overtime(doc, method):
             flt(row.amount) for row in doc.earnings if not row.get("do_not_include_in_total")
         )
 
+    def arrear_amount():
+        """Arrear rows (Additional Salary) are kept out of gross pay and added straight to net pay."""
+        return sum(
+            flt(row.amount)
+            for row in doc.earnings
+            if (row.salary_component or "").strip().lower() == "arrear"
+            and not row.get("do_not_include_in_total")
+        )
+
     def round_all_earnings():
         for row in doc.earnings:
             row.amount = round_to_integer(row.amount)
@@ -112,20 +121,21 @@ def calculate_overtime(doc, method):
         if gross_pay is None:
             gross_pay = earnings_sum
 
-        doc.gross_pay = gross_pay
+        arrear = arrear_amount()
+        doc.gross_pay = gross_pay - arrear   # arrear is not part of gross
 
-        doc.custom_total_earnings = flt(doc.gross_pay)   # shown as Total Earnings in print
+        doc.custom_total_earnings = flt(doc.gross_pay) + arrear   # gross + arrear, shown as Total Earnings in print
         loan_repayment = flt(doc.get("total_loan_repayment"))   # ERPNext deducts this from net pay
 
         if is_permanent:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount + flt(doc.custom_less_duty_hours_amount or 0)
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment + arrear)
             doc.custom_paid_salary = doc.net_pay + overtime_amount
             doc.rounded_total = round_to_integer(doc.custom_paid_salary)
             doc.custom_per_day_rate = flt(employee.ctc) or 0
         else:
             doc.total_deduction = flt(doc.total_deduction) + income_tax_amount
-            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment)
+            doc.net_pay = round_to_integer(doc.gross_pay - doc.total_deduction - loan_repayment + arrear)
             doc.custom_paid_salary = doc.net_pay
             doc.rounded_total = round_to_integer(doc.net_pay)
 
@@ -134,13 +144,17 @@ def calculate_overtime(doc, method):
     # ================================
     # 1 GET BASE SALARY
     # ================================
+    # Same date HRMS uses to pick the assignment: a new joiner's assignment starts on the
+    # joining date, which is after the slip's start date (otherwise the rate came out 0).
+    assignment_date = getattr(doc, "actual_start_date", None) or doc.start_date
+
     base_salary = flt(
         frappe.db.get_value(
             "Salary Structure Assignment",
             {
                 "employee": doc.employee,
                 "docstatus": 1,
-                "from_date": ["<=", doc.start_date]
+                "from_date": ["<=", assignment_date]
             },
             "base",
             order_by="from_date DESC"
