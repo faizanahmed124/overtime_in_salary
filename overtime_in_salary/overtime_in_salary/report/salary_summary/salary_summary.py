@@ -62,11 +62,17 @@ def get_columns(records, earn_comps, ded_comps):
     ]
 
     # ── All Earnings ──────────────────────────────────────────────
+    arrear_cols = []
     for comp in earn_comps:
         fn = _safe_fn("e_", comp)
         if has_val(fn):
-            cols.append({"label": comp, "fieldname": fn,
-                         "fieldtype": "Currency", "width": 140, "precision": 0})
+            col = {"label": comp, "fieldname": fn,
+                   "fieldtype": "Currency", "width": 140, "precision": 0}
+            # Arrear is shown after Gross Salary, not with the other earnings
+            if comp.strip().lower() == "arrear":
+                arrear_cols.append(col)
+            else:
+                cols.append(col)
 
     # OT Amount (custom field on Salary Slip)
     if has_val("ot_amount"):
@@ -76,6 +82,7 @@ def get_columns(records, earn_comps, ded_comps):
     # Gross total
     cols.append({"label": "Gross Salary", "fieldname": "gross_salary",
                  "fieldtype": "Currency", "width": 150, "precision": 0})
+    cols.extend(arrear_cols)
 
     # ── All Deductions ────────────────────────────────────────────
     for comp in ded_comps:
