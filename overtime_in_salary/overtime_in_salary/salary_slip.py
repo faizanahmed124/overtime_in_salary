@@ -396,6 +396,11 @@ class CustomSalarySlip(SalarySlip):
 
         # Then apply the custom overtime logic exactly once
         if not self.flags.get("custom_overtime_done"):
+            # Loan EMI must be in total_deduction before net pay is finalised below
+            # (the Loan Management doc_event only fires after this method returns)
+            from loan_management.utils import add_loan_deductions
+            add_loan_deductions(self)
+
             calculate_overtime(self, "validate")
             self.flags.custom_overtime_done = True
 
