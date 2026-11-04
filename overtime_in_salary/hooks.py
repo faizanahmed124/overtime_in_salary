@@ -7,9 +7,6 @@ app_license = "mit"
 
 
 doc_events = {
-    "Salary Slip": {
-        "validate": "overtime_in_salary.overtime_in_salary.salary_slip.calculate_overtime"
-    },
     "Attendance": {
         "on_submit": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_attendance_change",
         "on_cancel": "overtime_in_salary.overtime_in_salary.utils.salary_triggers.on_attendance_change",
@@ -28,7 +25,9 @@ doc_events = {
     },
 }
 override_doctype_class = {
-    "Leave Type": "overtime_in_salary.overtime_in_salary.overrides.leave_type.CustomLeaveType"
+    "Leave Type": "overtime_in_salary.overtime_in_salary.overrides.leave_type.CustomLeaveType",
+    # runs calculate_overtime itself (once, right after HRMS validate); no Salary Slip validate doc_event
+    "Salary Slip": "overtime_in_salary.overtime_in_salary.salary_slip.CustomSalarySlip",
 }
 
 doctype_js = {
