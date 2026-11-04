@@ -1,5 +1,5 @@
 import frappe
-from frappe.utils import date_diff, flt, money_in_words
+from frappe.utils import add_days, date_diff, flt, getdate, money_in_words
 from decimal import Decimal, ROUND_HALF_UP
 
 from hrms.payroll.doctype.salary_slip.salary_slip import SalarySlip
@@ -390,9 +390,33 @@ class CustomSalarySlip(SalarySlip):
     timesheets, emailing, status, etc.) is inherited untouched.
     """
 
+    def get_employee_attendance(self, start_date, end_date):
+        """HRMS counts Absent/leave attendance from the slip's start date, but payment days
+        already drop the days before joining. A new joiner with Absent marked before the
+        joining date was therefore deducted twice (payment days went negative). Only count
+        attendance inside the employee's actual working period."""
+        actual_start = getattr(self, "actual_start_date", None)
+        if actual_start and getdate(actual_start) > getdate(start_date):
+            start_date = actual_start
+        return super().get_employee_attendance(start_date, end_date)
+
     def validate(self):
         # Run the full original validation + calculation first
         super().validate()
+
+        # Pay ignores Absent marked before joining (see get_employee_attendance), but the
+        # slip still shows them in Absent Days. Display only: pay is already calculated.
+        actual_start = getattr(self, "actual_start_date", None)
+        if actual_start and getdate(actual_start) > getdate(self.start_date):
+            self.absent_days = flt(self.absent_days) + frappe.db.count(
+                "Attendance",
+                {
+                    "employee": self.employee,
+                    "docstatus": 1,
+                    "status": "Absent",
+                    "attendance_date": ["between", [self.start_date, add_days(actual_start, -1)]],
+                },
+            )
 
         # Then apply the custom overtime logic exactly once
         if not self.flags.get("custom_overtime_done"):
